@@ -75,6 +75,9 @@
 #if !MESHTASTIC_EXCLUDE_STOREFORWARD
 #include "modules/StoreForwardModule.h"
 #endif
+#if !MESHTASTIC_EXCLUDE_FLOCK
+#include "modules/esp32/FlockModule.h"
+#endif
 #endif
 
 #if !MESHTASTIC_EXCLUDE_EXTERNALNOTIFICATION
@@ -223,6 +226,10 @@ void setupModules()
     if (moduleConfig.has_paxcounter && moduleConfig.paxcounter.enabled) {
         paxcounterModule = new PaxcounterModule();
     }
+#endif
+#if !MESHTASTIC_EXCLUDE_FLOCK
+    // Flock surveillance detection module - always enabled on ESP32 when not excluded
+    flockModule = new FlockModule();
 #endif
 #endif
 #if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
