@@ -7,6 +7,8 @@
 #include "SinglePortModule.h"
 #include "concurrency/OSThread.h"
 #include <NimBLEDevice.h>
+#include <map>
+#include <string>
 
 /**
  * FlockModule - Surveillance Camera Detection System
@@ -58,6 +60,17 @@ class FlockModule : public SinglePortModule, private concurrency::OSThread
 
     // BLE scanner
     NimBLEScan *pBLEScan = nullptr;
+
+    // Device deduplication - track when we last alerted for each device
+    // Key: device identifier (MAC address or unique ID)
+    // Value: timestamp (millis) of last alert sent
+    std::map<std::string, uint32_t> seenDevices;
+    uint32_t lastDedupeCleanup = 0;
+
+    // Deduplication methods
+    bool shouldAlertForDevice(const char *identifier);
+    void recordDeviceAlert(const char *identifier);
+    void cleanupOldDevices();
 
     // Detection methods
     bool checkMacPrefix(const uint8_t *mac);
