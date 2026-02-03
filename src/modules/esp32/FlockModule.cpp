@@ -11,6 +11,9 @@
 #include <esp_wifi.h>
 #include <cstring>
 
+// For checking config state
+extern meshtastic_Config config;
+
 FlockModule *flockModule = nullptr;
 FlockModule *FlockModule::instance = nullptr;
 
@@ -126,15 +129,56 @@ FlockModule::~FlockModule()
     instance = nullptr;
 }
 
+bool FlockModule::canUseWiFi()
+{
+    // WiFi promiscuous mode conflicts with normal WiFi operations
+    // Only use if WiFi networking is disabled
+    return !config.network.wifi_enabled;
+}
+
+bool FlockModule::canUseBLE()
+{
+    // BLE scanning conflicts with Meshtastic's phone app BLE
+    // Only use if Bluetooth is disabled
+    return !config.bluetooth.enabled;
+}
+
+bool FlockModule::isActive()
+{
+    // Module is only active if we can use at least one scanning method
+    return canUseWiFi() || canUseBLE();
+}
+
 void FlockModule::startScanning()
 {
     if (scanning)
         return;
 
+    if (!isActive()) {
+        LOG_WARN("FlockModule: Cannot start - WiFi and/or Bluetooth in use by Meshtastic");
+        LOG_WARN("FlockModule: Disable WiFi (config.network.wifi_enabled) and Bluetooth (config.bluetooth.enabled) to enable surveillance detection");
+        return;
+    }
+
     LOG_INFO("FlockModule: Starting surveillance detection scanning");
 
-    initWiFiPromiscuous();
-    initBLEScanner();
+    // Only init WiFi promiscuous if WiFi is not being used
+    if (canUseWiFi()) {
+        wifiScanEnabled = true;
+        initWiFiPromiscuous();
+    } else {
+        wifiScanEnabled = false;
+        LOG_WARN("FlockModule: WiFi scanning disabled - WiFi in use by Meshtastic networking");
+    }
+
+    // Only init BLE scanner if Bluetooth is not being used
+    if (canUseBLE()) {
+        bleScanEnabled = true;
+        initBLEScanner();
+    } else {
+        bleScanEnabled = false;
+        LOG_WARN("FlockModule: BLE scanning disabled - Bluetooth in use by Meshtastic");
+    }
 
     scanning = true;
     triggered = false;
@@ -150,15 +194,19 @@ void FlockModule::stopScanning()
 
     LOG_INFO("FlockModule: Stopping surveillance detection scanning");
 
-    // Disable WiFi promiscuous mode
-    esp_wifi_set_promiscuous(false);
+    // Disable WiFi promiscuous mode if we were using it
+    if (wifiScanEnabled) {
+        esp_wifi_set_promiscuous(false);
+    }
 
-    // Stop BLE scanning
-    if (pBLEScan && pBLEScan->isScanning()) {
+    // Stop BLE scanning if we were using it
+    if (bleScanEnabled && pBLEScan && pBLEScan->isScanning()) {
         pBLEScan->stop();
     }
 
     scanning = false;
+    wifiScanEnabled = false;
+    bleScanEnabled = false;
 }
 
 void FlockModule::initWiFiPromiscuous()
@@ -528,29 +576,47 @@ int32_t FlockModule::runOnce()
         firstTime = false;
         LOG_INFO("FlockModule: Initializing surveillance detection system");
 
+        // Check if we can run at all
+        if (!isActive()) {
+            LOG_WARN("FlockModule: INACTIVE - Both WiFi and Bluetooth are in use by Meshtastic");
+            LOG_WARN("FlockModule: To enable flock detection, disable WiFi and/or Bluetooth in device config");
+            return 30000; // Check again in 30 seconds in case config changes
+        }
+
         // Auto-start scanning
         startScanning();
 
         return 1000; // Check again in 1 second
     }
 
+    // If not scanning but could be active, try to start
+    if (!scanning && isActive()) {
+        LOG_INFO("FlockModule: Config changed, attempting to start scanning");
+        startScanning();
+        return 1000;
+    }
+
     if (!scanning) {
         return 5000; // Check if we should start scanning
     }
 
-    // Handle WiFi channel hopping
-    hopChannel();
-
-    // Handle BLE scanning
-    unsigned long now = millis();
-    if (now - lastBLEScan >= FLOCK_BLE_SCAN_INTERVAL) {
-        performBLEScan();
-        lastBLEScan = now;
+    // Handle WiFi channel hopping (only if WiFi scanning is enabled)
+    if (wifiScanEnabled) {
+        hopChannel();
     }
 
-    // Clear BLE results after scan completes
-    if (pBLEScan && !pBLEScan->isScanning() && now - lastBLEScan > FLOCK_BLE_SCAN_DURATION * 1000) {
-        pBLEScan->clearResults();
+    // Handle BLE scanning (only if BLE scanning is enabled)
+    unsigned long now = millis();
+    if (bleScanEnabled) {
+        if (now - lastBLEScan >= FLOCK_BLE_SCAN_INTERVAL) {
+            performBLEScan();
+            lastBLEScan = now;
+        }
+
+        // Clear BLE results after scan completes
+        if (pBLEScan && !pBLEScan->isScanning() && now - lastBLEScan > FLOCK_BLE_SCAN_DURATION * 1000) {
+            pBLEScan->clearResults();
+        }
     }
 
     // Check if device has gone out of range

@@ -34,12 +34,19 @@ class FlockModule : public SinglePortModule, private concurrency::OSThread
     void stopScanning();
     bool isScanning() const { return scanning; }
 
+    // Check if module can run (WiFi/BLE availability)
+    bool isActive();
+    bool canUseWiFi();
+    bool canUseBLE();
+
   protected:
     virtual int32_t runOnce() override;
 
   private:
     bool firstTime = true;
     bool scanning = false;
+    bool wifiScanEnabled = false;  // True if WiFi promiscuous mode is active
+    bool bleScanEnabled = false;   // True if BLE scanning is active
     uint32_t lastSentToMesh = 0;
     uint32_t lastBLEScan = 0;
     uint8_t currentChannel = 1;
