@@ -11,8 +11,7 @@
 #include <esp_wifi.h>
 #include <cstring>
 
-// For checking config state
-extern meshtastic_Config config;
+// config is already declared in NodeDB.h as meshtastic_LocalConfig
 
 FlockModule *flockModule = nullptr;
 FlockModule *FlockModule::instance = nullptr;
