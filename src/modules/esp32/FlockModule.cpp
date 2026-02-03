@@ -254,9 +254,11 @@ void FlockModule::hopChannel()
         currentChannel++;
         if (currentChannel > FLOCK_MAX_CHANNEL) {
             currentChannel = 1;
+            LOG_DEBUG("FlockModule: WiFi channel rotation complete, back to channel 1");
         }
         esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
         lastChannelHop = now;
+        LOG_DEBUG("FlockModule: Hopped to WiFi channel %d", currentChannel);
     }
 }
 
