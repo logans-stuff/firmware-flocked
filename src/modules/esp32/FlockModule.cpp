@@ -5,6 +5,7 @@
 #include "FlockModule.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "GPSStatus.h"
 #include "main.h"
 #include <Throttle.h>
 #include <WiFi.h>
@@ -512,12 +513,34 @@ void FlockModule::sendDetectionMessage(const char *deviceType, const char *ident
         return;
     }
 
+    // Query GPS for current location
+    bool hasGpsLock = false;
+    double latitude = 0.0;
+    double longitude = 0.0;
+    int32_t altitude = 0;
+
+    if (gpsStatus && gpsStatus->getHasLock()) {
+        hasGpsLock = true;
+        // GPS coordinates are stored as integers scaled by 1e7
+        latitude = gpsStatus->getLatitude() * 1e-7;
+        longitude = gpsStatus->getLongitude() * 1e-7;
+        altitude = gpsStatus->getAltitude();
+        LOG_INFO("FlockModule: GPS lock - lat:%.6f lon:%.6f alt:%dm", latitude, longitude, altitude);
+    } else {
+        LOG_WARN("FlockModule: No GPS lock available for detection location");
+    }
+
     LOG_WARN("FlockModule: DETECTED %s - %s RSSI:%d via %s", deviceType, identifier, rssi, method);
 
-    // Build detection message
-    char message[200];
-    snprintf(message, sizeof(message), "ALERT: %s detected! ID:%s RSSI:%d Method:%s",
-             deviceType, identifier, rssi, method);
+    // Build detection message with GPS coordinates if available
+    char message[237]; // Max Meshtastic payload size
+    if (hasGpsLock) {
+        snprintf(message, sizeof(message), "ALERT: %s detected! ID:%s RSSI:%d Loc:%.6f,%.6f Alt:%dm",
+                 deviceType, identifier, rssi, latitude, longitude, altitude);
+    } else {
+        snprintf(message, sizeof(message), "ALERT: %s detected! ID:%s RSSI:%d (No GPS)",
+                 deviceType, identifier, rssi);
+    }
 
     // Send to mesh
     meshtastic_MeshPacket *p = allocDataPacket();
@@ -563,8 +586,17 @@ void FlockModule::sendHeartbeatMessage()
     if (!Throttle::isWithinTimespanMs(lastHeartbeat, FLOCK_HEARTBEAT_INTERVAL)) {
         LOG_INFO("FlockModule: Heartbeat - surveillance device still in range");
 
-        char message[80];
-        snprintf(message, sizeof(message), "Surveillance device still detected nearby");
+        // Query GPS for current location
+        char message[150];
+        if (gpsStatus && gpsStatus->getHasLock()) {
+            double latitude = gpsStatus->getLatitude() * 1e-7;
+            double longitude = gpsStatus->getLongitude() * 1e-7;
+            int32_t altitude = gpsStatus->getAltitude();
+            snprintf(message, sizeof(message), "Surveillance device still nearby Loc:%.6f,%.6f Alt:%dm",
+                     latitude, longitude, altitude);
+        } else {
+            snprintf(message, sizeof(message), "Surveillance device still detected nearby (No GPS)");
+        }
 
         meshtastic_MeshPacket *p = allocDataPacket();
         if (p) {
