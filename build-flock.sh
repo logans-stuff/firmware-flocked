@@ -83,11 +83,11 @@ install_platformio() {
         rm -f get-platformio.py
 
         # Add to PATH for current session
-        export PATH="$PATH:$HOME/.platformio/penv/bin"
+        export PATH="$HOME/.platformio/penv/bin:$PATH"
 
         # Add to bashrc if not already there
         if ! grep -q "platformio/penv/bin" ~/.bashrc 2>/dev/null; then
-            echo 'export PATH="$PATH:$HOME/.platformio/penv/bin"' >> ~/.bashrc
+            echo 'export PATH="$HOME/.platformio/penv/bin:$PATH"' >> ~/.bashrc
         fi
     fi
 
@@ -136,8 +136,8 @@ build_firmware() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$SCRIPT_DIR"
 
-    # Make sure pio is in PATH
-    export PATH="$PATH:$HOME/.platformio/penv/bin"
+    # Make sure pio is in PATH - put user's PlatformIO FIRST to override system version
+    export PATH="$HOME/.platformio/penv/bin:$PATH"
 
     # Clean previous build (optional)
     if [ "$ACTION" == "clean" ]; then
@@ -179,7 +179,7 @@ flash_firmware() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$SCRIPT_DIR"
 
-    export PATH="$PATH:$HOME/.platformio/penv/bin"
+    export PATH="$HOME/.platformio/penv/bin:$PATH"
 
     # Check for connected device
     echo "Looking for device..."
@@ -211,7 +211,7 @@ monitor_serial() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$SCRIPT_DIR"
 
-    export PATH="$PATH:$HOME/.platformio/penv/bin"
+    export PATH="$HOME/.platformio/penv/bin:$PATH"
 
     pio device monitor -b 115200
 }
@@ -246,7 +246,7 @@ case "$ACTION" in
         monitor_serial
         ;;
     "clean")
-        export PATH="$PATH:$HOME/.platformio/penv/bin"
+        export PATH="$HOME/.platformio/penv/bin:$PATH"
         pio run -e "$TARGET" -t clean
         echo -e "${GREEN}Clean complete.${NC}"
         ;;

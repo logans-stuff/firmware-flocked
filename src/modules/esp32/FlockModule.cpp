@@ -264,34 +264,46 @@ void FlockModule::hopChannel()
 
 void FlockModule::wifiSnifferPacketHandler(void *buff, wifi_promiscuous_pkt_type_t type)
 {
-    if (!instance || !instance->scanning)
+    if (!instance || !instance->scanning || !instance->wifiScanEnabled)
+        return;
+
+    // Only process management frames (beacons, probe requests, etc.)
+    if (type != WIFI_PKT_MGMT)
         return;
 
     const wifi_promiscuous_pkt_t *ppkt = (wifi_promiscuous_pkt_t *)buff;
     const wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t *)ppkt->payload;
     const wifi_ieee80211_mac_hdr_t *hdr = &ipkt->hdr;
 
-    // Check for probe requests (subtype 0x04) and beacons (subtype 0x08)
-    uint8_t frame_type = (hdr->frame_ctrl & 0xFF) >> 2;
-    if (frame_type != 0x20 && frame_type != 0x80) {
+    // Frame Control: Protocol(2) | Type(2) | Subtype(4) | Flags(8)
+    // Type 0 = Management, Subtype 8 = Beacon (0x80), Subtype 4 = Probe Request (0x40)
+    uint8_t frame_subtype = (hdr->frame_ctrl & 0xF0);  // Get subtype nibble
+
+    bool isBeacon = (frame_subtype == 0x80);        // Subtype 8 = Beacon
+    bool isProbeReq = (frame_subtype == 0x40);      // Subtype 4 = Probe Request
+    bool isProbeResp = (frame_subtype == 0x50);     // Subtype 5 = Probe Response
+
+    if (!isBeacon && !isProbeReq && !isProbeResp) {
         return;
     }
 
-    // Extract SSID from probe request or beacon
+    // Extract SSID from management frame
     char ssid[33] = {0};
-    uint8_t *payload = (uint8_t *)ipkt + 24;
+    uint8_t *frame_body = (uint8_t *)ppkt->payload + 24;  // Skip MAC header (24 bytes)
 
-    if (frame_type == 0x20) {
-        // Probe request - SSID starts immediately
-    } else {
-        // Beacon frame - skip fixed parameters
-        payload += 12;
+    if (isBeacon || isProbeResp) {
+        // Beacon/Probe Response: skip fixed parameters (timestamp 8 + beacon interval 2 + capability 2 = 12 bytes)
+        frame_body += 12;
     }
+    // Probe Request: SSID element starts immediately in frame body
 
-    // Parse SSID element (tag 0, length, data)
-    if (payload[0] == 0 && payload[1] <= 32) {
-        memcpy(ssid, &payload[2], payload[1]);
-        ssid[payload[1]] = '\0';
+    // Parse SSID element (Element ID 0, Length, SSID data)
+    if (frame_body[0] == 0 && frame_body[1] <= 32 && frame_body[1] > 0) {
+        memcpy(ssid, &frame_body[2], frame_body[1]);
+        ssid[frame_body[1]] = '\0';
+
+        // Debug: log all SSIDs we see
+        LOG_DEBUG("FlockModule: WiFi saw SSID '%s' RSSI:%d", ssid, ppkt->rx_ctrl.rssi);
     }
 
     // Check if SSID matches our patterns
@@ -301,7 +313,7 @@ void FlockModule::wifiSnifferPacketHandler(void *buff, wifi_promiscuous_pkt_type
                  hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
                  hdr->addr2[3], hdr->addr2[4], hdr->addr2[5]);
 
-        const char *detectionType = (frame_type == 0x20) ? "WiFi Probe" : "WiFi Beacon";
+        const char *detectionType = isBeacon ? "WiFi Beacon" : (isProbeReq ? "WiFi Probe" : "WiFi ProbeResp");
         instance->sendDetectionMessage("Flock/Surveillance", macStr, ppkt->rx_ctrl.rssi, detectionType);
         return;
     }
@@ -313,7 +325,7 @@ void FlockModule::wifiSnifferPacketHandler(void *buff, wifi_promiscuous_pkt_type
                  hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
                  hdr->addr2[3], hdr->addr2[4], hdr->addr2[5]);
 
-        const char *detectionType = (frame_type == 0x20) ? "WiFi Probe MAC" : "WiFi Beacon MAC";
+        const char *detectionType = isBeacon ? "WiFi Beacon MAC" : (isProbeReq ? "WiFi Probe MAC" : "WiFi ProbeResp MAC");
         instance->sendDetectionMessage("Flock/Surveillance", macStr, ppkt->rx_ctrl.rssi, detectionType);
     }
 }
