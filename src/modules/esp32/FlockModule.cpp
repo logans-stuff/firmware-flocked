@@ -25,6 +25,9 @@ FlockModule *FlockModule::instance = nullptr;
 #define FLOCK_MIN_BROADCAST_INTERVAL 30000 // minimum 30 seconds between mesh broadcasts
 #define FLOCK_HEARTBEAT_INTERVAL 60000    // heartbeat every 60 seconds while device in range
 #define FLOCK_DEVICE_TIMEOUT 120000       // device considered out of range after 2 minutes
+#define FLOCK_DEDUPE_INTERVAL 1800000     // 30 minutes - don't re-alert for same device within this window
+#define FLOCK_DEDUPE_CLEANUP_INTERVAL 300000 // cleanup old entries every 5 minutes
+#define FLOCK_MAX_TRACKED_DEVICES 50      // limit memory usage by tracking at most 50 devices
 
 // WiFi SSID patterns to detect (case-insensitive)
 static const char *wifi_ssid_patterns[] = {
@@ -502,9 +505,101 @@ const char *FlockModule::estimateRavenFirmwareVersion(NimBLEAdvertisedDevice *de
     return "Unknown";
 }
 
+// Check if we should alert for this device (not seen within dedup window)
+bool FlockModule::shouldAlertForDevice(const char *identifier)
+{
+    if (!identifier)
+        return false;
+
+    std::string id(identifier);
+    auto it = seenDevices.find(id);
+
+    if (it == seenDevices.end()) {
+        // Never seen this device before
+        return true;
+    }
+
+    // Check if enough time has passed since last alert
+    uint32_t elapsed = millis() - it->second;
+    if (elapsed >= FLOCK_DEDUPE_INTERVAL) {
+        return true;
+    }
+
+    LOG_DEBUG("FlockModule: Dedup - skipping %s (last alert %d sec ago, need %d sec)",
+              identifier, elapsed / 1000, FLOCK_DEDUPE_INTERVAL / 1000);
+    return false;
+}
+
+// Record that we sent an alert for this device
+void FlockModule::recordDeviceAlert(const char *identifier)
+{
+    if (!identifier)
+        return;
+
+    std::string id(identifier);
+
+    // If at capacity, remove oldest entry before adding new one
+    if (seenDevices.size() >= FLOCK_MAX_TRACKED_DEVICES) {
+        uint32_t oldestTime = UINT32_MAX;
+        std::string oldestId;
+
+        for (const auto &entry : seenDevices) {
+            if (entry.second < oldestTime) {
+                oldestTime = entry.second;
+                oldestId = entry.first;
+            }
+        }
+
+        if (!oldestId.empty()) {
+            LOG_DEBUG("FlockModule: Dedup cache full, removing oldest: %s", oldestId.c_str());
+            seenDevices.erase(oldestId);
+        }
+    }
+
+    seenDevices[id] = millis();
+    LOG_DEBUG("FlockModule: Recorded alert for %s (tracking %d devices)", identifier, seenDevices.size());
+}
+
+// Clean up devices that haven't been seen in a long time
+void FlockModule::cleanupOldDevices()
+{
+    if (Throttle::isWithinTimespanMs(lastDedupeCleanup, FLOCK_DEDUPE_CLEANUP_INTERVAL)) {
+        return;
+    }
+
+    uint32_t now = millis();
+    int removed = 0;
+
+    for (auto it = seenDevices.begin(); it != seenDevices.end();) {
+        uint32_t elapsed = now - it->second;
+        // Remove entries older than 2x the dedup interval
+        if (elapsed > FLOCK_DEDUPE_INTERVAL * 2) {
+            LOG_DEBUG("FlockModule: Cleanup - removing stale device %s", it->first.c_str());
+            it = seenDevices.erase(it);
+            removed++;
+        } else {
+            ++it;
+        }
+    }
+
+    if (removed > 0) {
+        LOG_INFO("FlockModule: Dedup cleanup removed %d stale entries, %d remaining", removed, seenDevices.size());
+    }
+
+    lastDedupeCleanup = now;
+}
+
 void FlockModule::sendDetectionMessage(const char *deviceType, const char *identifier, int rssi, const char *method)
 {
-    // Throttle messages to mesh
+    // Per-device deduplication - don't re-alert for same device within 30 minutes
+    if (!shouldAlertForDevice(identifier)) {
+        // Still update detection state even if deduplicated
+        deviceInRange = true;
+        lastDetectionTime = millis();
+        return;
+    }
+
+    // Throttle messages to mesh (global rate limit)
     if (Throttle::isWithinTimespanMs(lastSentToMesh, FLOCK_MIN_BROADCAST_INTERVAL)) {
         LOG_DEBUG("FlockModule: Detection throttled - %s %s RSSI:%d via %s", deviceType, identifier, rssi, method);
         // Still update detection state even if throttled
@@ -576,6 +671,9 @@ void FlockModule::sendDetectionMessage(const char *deviceType, const char *ident
     lastDetectionTime = millis();
     lastHeartbeat = millis();
     triggered = true;
+
+    // Record this device for deduplication
+    recordDeviceAlert(identifier);
 }
 
 void FlockModule::sendHeartbeatMessage()
@@ -675,6 +773,9 @@ int32_t FlockModule::runOnce()
     if (deviceInRange) {
         sendHeartbeatMessage();
     }
+
+    // Periodically clean up old entries from dedup cache
+    cleanupOldDevices();
 
     return 100; // Run every 100ms for responsive channel hopping
 }
