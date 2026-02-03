@@ -45,6 +45,28 @@ install_dependencies() {
         libudev-dev \
         pkg-config
 
+    # Install mklittlefs for filesystem image building
+    if ! command_exists mklittlefs; then
+        echo "Installing mklittlefs..."
+        # Try to install from package manager first
+        if sudo apt-get install -y mklittlefs 2>/dev/null; then
+            echo "mklittlefs installed from apt"
+        else
+            # Build from source if not available in apt
+            echo "Building mklittlefs from source..."
+            TEMP_DIR=$(mktemp -d)
+            cd "$TEMP_DIR"
+            git clone --depth 1 https://github.com/earlephilhower/mklittlefs.git
+            cd mklittlefs
+            git submodule update --init
+            make
+            sudo cp mklittlefs /usr/local/bin/
+            cd -
+            rm -rf "$TEMP_DIR"
+            echo "mklittlefs installed to /usr/local/bin"
+        fi
+    fi
+
     echo -e "${GREEN}System dependencies installed.${NC}"
 }
 
@@ -227,6 +249,31 @@ case "$ACTION" in
         export PATH="$PATH:$HOME/.platformio/penv/bin"
         pio run -e "$TARGET" -t clean
         echo -e "${GREEN}Clean complete.${NC}"
+        ;;
+    "install-mklittlefs")
+        echo -e "${YELLOW}Installing mklittlefs...${NC}"
+        if command_exists mklittlefs; then
+            echo "mklittlefs already installed"
+        else
+            # Try apt first
+            if sudo apt-get install -y mklittlefs 2>/dev/null; then
+                echo "mklittlefs installed from apt"
+            else
+                # Build from source
+                echo "Building mklittlefs from source..."
+                sudo apt-get install -y build-essential
+                TEMP_DIR=$(mktemp -d)
+                cd "$TEMP_DIR"
+                git clone --depth 1 https://github.com/earlephilhower/mklittlefs.git
+                cd mklittlefs
+                git submodule update --init
+                make
+                sudo cp mklittlefs /usr/local/bin/
+                cd -
+                rm -rf "$TEMP_DIR"
+            fi
+        fi
+        echo -e "${GREEN}mklittlefs installed.${NC}"
         ;;
     "all")
         install_dependencies
