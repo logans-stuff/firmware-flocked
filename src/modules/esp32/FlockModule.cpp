@@ -616,8 +616,8 @@ void FlockModule::sendDetectionMessage(const char *deviceType, const char *ident
         return;
     }
 
-    // Throttle messages to mesh (global rate limit)
-    if (Throttle::isWithinTimespanMs(lastSentToMesh, FLOCK_MIN_BROADCAST_INTERVAL)) {
+    // Throttle messages to mesh (global rate limit) - but allow first detection through
+    if (lastSentToMesh != 0 && Throttle::isWithinTimespanMs(lastSentToMesh, FLOCK_MIN_BROADCAST_INTERVAL)) {
         LOG_DEBUG("FlockModule: Detection throttled - %s %s RSSI:%d via %s", deviceType, identifier, rssi, method);
         // Still update detection state even if throttled
         deviceInRange = true;
