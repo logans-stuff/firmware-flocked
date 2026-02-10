@@ -27,7 +27,6 @@ FlockModule *FlockModule::instance = nullptr;
 #define FLOCK_DEVICE_TIMEOUT 120000       // device considered out of range after 2 minutes
 #define FLOCK_DEDUPE_INTERVAL 1800000     // 30 minutes - don't re-alert for same device within this window
 #define FLOCK_DEDUPE_CLEANUP_INTERVAL 300000 // cleanup old entries every 5 minutes
-#define FLOCK_MAX_TRACKED_DEVICES 50      // limit memory usage by tracking at most 50 devices
 
 // WiFi SSID patterns to detect (case-insensitive)
 static const char *wifi_ssid_patterns[] = {
@@ -120,6 +119,9 @@ FlockModule::FlockModule()
     : SinglePortModule("flock", meshtastic_PortNum_TEXT_MESSAGE_APP), OSThread("FlockModule")
 {
     instance = this;
+    // Initialize dedup array
+    memset(seenDevices, 0, sizeof(seenDevices));
+    seenDeviceCount = 0;
 }
 
 FlockModule::~FlockModule()
@@ -511,23 +513,23 @@ bool FlockModule::shouldAlertForDevice(const char *identifier)
     if (!identifier)
         return false;
 
-    std::string id(identifier);
-    auto it = seenDevices.find(id);
+    uint32_t now = millis();
 
-    if (it == seenDevices.end()) {
-        // Never seen this device before
-        return true;
+    // Search for this device in our list
+    for (int i = 0; i < seenDeviceCount; i++) {
+        if (strncmp(seenDevices[i].identifier, identifier, sizeof(seenDevices[i].identifier) - 1) == 0) {
+            // Found it - check if enough time has passed
+            uint32_t elapsed = now - seenDevices[i].lastAlertTime;
+            if (elapsed >= FLOCK_DEDUPE_INTERVAL) {
+                return true;  // Enough time passed, allow alert
+            }
+            LOG_DEBUG("FlockModule: Dedup - skipping %s (last alert %d sec ago)", identifier, elapsed / 1000);
+            return false;
+        }
     }
 
-    // Check if enough time has passed since last alert
-    uint32_t elapsed = millis() - it->second;
-    if (elapsed >= FLOCK_DEDUPE_INTERVAL) {
-        return true;
-    }
-
-    LOG_DEBUG("FlockModule: Dedup - skipping %s (last alert %d sec ago, need %d sec)",
-              identifier, elapsed / 1000, FLOCK_DEDUPE_INTERVAL / 1000);
-    return false;
+    // Never seen this device before
+    return true;
 }
 
 // Record that we sent an alert for this device
@@ -536,28 +538,39 @@ void FlockModule::recordDeviceAlert(const char *identifier)
     if (!identifier)
         return;
 
-    std::string id(identifier);
+    uint32_t now = millis();
 
-    // If at capacity, remove oldest entry before adding new one
-    if (seenDevices.size() >= FLOCK_MAX_TRACKED_DEVICES) {
-        uint32_t oldestTime = UINT32_MAX;
-        std::string oldestId;
-
-        for (const auto &entry : seenDevices) {
-            if (entry.second < oldestTime) {
-                oldestTime = entry.second;
-                oldestId = entry.first;
-            }
-        }
-
-        if (!oldestId.empty()) {
-            LOG_DEBUG("FlockModule: Dedup cache full, removing oldest: %s", oldestId.c_str());
-            seenDevices.erase(oldestId);
+    // Check if device already exists, update timestamp
+    for (int i = 0; i < seenDeviceCount; i++) {
+        if (strncmp(seenDevices[i].identifier, identifier, sizeof(seenDevices[i].identifier) - 1) == 0) {
+            seenDevices[i].lastAlertTime = now;
+            return;
         }
     }
 
-    seenDevices[id] = millis();
-    LOG_DEBUG("FlockModule: Recorded alert for %s (tracking %d devices)", identifier, seenDevices.size());
+    // Need to add new entry
+    if (seenDeviceCount >= MAX_TRACKED_DEVICES) {
+        // Find and replace oldest entry
+        int oldestIdx = 0;
+        uint32_t oldestTime = seenDevices[0].lastAlertTime;
+        for (int i = 1; i < seenDeviceCount; i++) {
+            if (seenDevices[i].lastAlertTime < oldestTime) {
+                oldestTime = seenDevices[i].lastAlertTime;
+                oldestIdx = i;
+            }
+        }
+        LOG_DEBUG("FlockModule: Dedup cache full, replacing %s", seenDevices[oldestIdx].identifier);
+        strncpy(seenDevices[oldestIdx].identifier, identifier, sizeof(seenDevices[oldestIdx].identifier) - 1);
+        seenDevices[oldestIdx].identifier[sizeof(seenDevices[oldestIdx].identifier) - 1] = '\0';
+        seenDevices[oldestIdx].lastAlertTime = now;
+    } else {
+        // Add to end
+        strncpy(seenDevices[seenDeviceCount].identifier, identifier, sizeof(seenDevices[seenDeviceCount].identifier) - 1);
+        seenDevices[seenDeviceCount].identifier[sizeof(seenDevices[seenDeviceCount].identifier) - 1] = '\0';
+        seenDevices[seenDeviceCount].lastAlertTime = now;
+        seenDeviceCount++;
+    }
+    LOG_DEBUG("FlockModule: Recorded alert for %s (tracking %d devices)", identifier, seenDeviceCount);
 }
 
 // Clean up devices that haven't been seen in a long time
@@ -570,20 +583,24 @@ void FlockModule::cleanupOldDevices()
     uint32_t now = millis();
     int removed = 0;
 
-    for (auto it = seenDevices.begin(); it != seenDevices.end();) {
-        uint32_t elapsed = now - it->second;
-        // Remove entries older than 2x the dedup interval
-        if (elapsed > FLOCK_DEDUPE_INTERVAL * 2) {
-            LOG_DEBUG("FlockModule: Cleanup - removing stale device %s", it->first.c_str());
-            it = seenDevices.erase(it);
-            removed++;
+    // Compact array, removing stale entries
+    int writeIdx = 0;
+    for (int readIdx = 0; readIdx < seenDeviceCount; readIdx++) {
+        uint32_t elapsed = now - seenDevices[readIdx].lastAlertTime;
+        if (elapsed <= FLOCK_DEDUPE_INTERVAL * 2) {
+            // Keep this entry
+            if (writeIdx != readIdx) {
+                memcpy(&seenDevices[writeIdx], &seenDevices[readIdx], sizeof(SeenDevice));
+            }
+            writeIdx++;
         } else {
-            ++it;
+            removed++;
         }
     }
+    seenDeviceCount = writeIdx;
 
     if (removed > 0) {
-        LOG_INFO("FlockModule: Dedup cleanup removed %d stale entries, %d remaining", removed, seenDevices.size());
+        LOG_INFO("FlockModule: Dedup cleanup removed %d stale entries, %d remaining", removed, seenDeviceCount);
     }
 
     lastDedupeCleanup = now;
