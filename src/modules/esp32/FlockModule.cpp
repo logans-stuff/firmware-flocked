@@ -779,11 +779,6 @@ int32_t FlockModule::runOnce()
         triggered = false;
     }
 
-    // Send heartbeat if device still in range
-    if (deviceInRange) {
-        sendHeartbeatMessage();
-    }
-
     // Periodically clean up old entries from dedup cache
     cleanupOldDevices();
 
