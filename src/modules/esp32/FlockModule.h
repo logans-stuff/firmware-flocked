@@ -71,8 +71,8 @@ class FlockModule : public SinglePortModule, private concurrency::OSThread
     int seenDeviceCount = 0;
     uint32_t lastDedupeCleanup = 0;
 
-    // Deduplication methods
-    bool shouldAlertForDevice(const char *identifier, int rssi);
+    // Deduplication methods - returns: 0=skip, 1=new detection, 2=getting closer
+    int shouldAlertForDevice(const char *identifier, int rssi);
     void recordDeviceAlert(const char *identifier, int rssi);
     void cleanupOldDevices();
 
