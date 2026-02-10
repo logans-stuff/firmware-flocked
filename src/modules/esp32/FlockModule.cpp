@@ -672,15 +672,10 @@ void FlockModule::sendDetectionMessage(const char *deviceType, const char *ident
 
         lastSentToMesh = millis();
 
-        // Don't send on default public channel for security
-        if (!channels.isDefaultChannel(0)) {
-            LOG_INFO("FlockModule: Sending detection to mesh, id=%d", p->id);
-            service->sendToMesh(p);
-        } else {
-            LOG_WARN("FlockModule: Not sending on public channel");
-            // Still need to free the packet
-            packetPool.release(p);
-        }
+        // Send on channel 1 (secondary channel) instead of primary
+        p->channel = 1;
+        LOG_INFO("FlockModule: Sending detection to mesh on channel 1, id=%d", p->id);
+        service->sendToMesh(p);
     }
 
     // Update detection state
@@ -719,11 +714,9 @@ void FlockModule::sendHeartbeatMessage()
             p->decoded.payload.size = strlen(message);
             memcpy(p->decoded.payload.bytes, message, p->decoded.payload.size);
 
-            if (!channels.isDefaultChannel(0)) {
-                service->sendToMesh(p);
-            } else {
-                packetPool.release(p);
-            }
+            // Send on channel 1 (secondary channel)
+            p->channel = 1;
+            service->sendToMesh(p);
         }
 
         lastHeartbeat = millis();
