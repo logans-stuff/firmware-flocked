@@ -507,11 +507,12 @@ const char *FlockModule::estimateRavenFirmwareVersion(NimBLEAdvertisedDevice *de
     return "Unknown";
 }
 
-// Check if we should alert for this device (not seen within dedup window, or RSSI improved significantly)
-bool FlockModule::shouldAlertForDevice(const char *identifier, int rssi)
+// Check if we should alert for this device
+// Returns: 0 = skip (deduped), 1 = new detection, 2 = getting closer (RSSI improved)
+int FlockModule::shouldAlertForDevice(const char *identifier, int rssi)
 {
     if (!identifier)
-        return false;
+        return 0;
 
     uint32_t now = millis();
 
@@ -523,23 +524,23 @@ bool FlockModule::shouldAlertForDevice(const char *identifier, int rssi)
             if (rssiImprovement >= RSSI_IMPROVEMENT_THRESHOLD) {
                 LOG_INFO("FlockModule: RSSI improved by %d dB (was %d, now %d) - getting closer!",
                          rssiImprovement, seenDevices[i].lastRssi, rssi);
-                return true;  // Signal stronger, allow alert
+                return 2;  // Getting closer
             }
 
             // Check if enough time has passed
             uint32_t elapsed = now - seenDevices[i].lastAlertTime;
             if (elapsed >= FLOCK_DEDUPE_INTERVAL) {
-                return true;  // Enough time passed, allow alert
+                return 1;  // Timeout, treat as new detection
             }
 
             LOG_DEBUG("FlockModule: Dedup - skipping %s (RSSI:%d, last:%d, %d sec ago)",
                       identifier, rssi, seenDevices[i].lastRssi, elapsed / 1000);
-            return false;
+            return 0;  // Skip
         }
     }
 
     // Never seen this device before
-    return true;
+    return 1;  // New detection
 }
 
 // Record that we sent an alert for this device
@@ -621,8 +622,9 @@ void FlockModule::cleanupOldDevices()
 
 void FlockModule::sendDetectionMessage(const char *deviceType, const char *identifier, int rssi, const char *method)
 {
-    // Per-device deduplication - don't re-alert unless 30 min passed or RSSI improved significantly
-    if (!shouldAlertForDevice(identifier, rssi)) {
+    // Per-device deduplication - returns: 0=skip, 1=new, 2=closer
+    int alertType = shouldAlertForDevice(identifier, rssi);
+    if (alertType == 0) {
         // Still update detection state even if deduplicated
         deviceInRange = true;
         lastDetectionTime = millis();
@@ -657,14 +659,28 @@ void FlockModule::sendDetectionMessage(const char *deviceType, const char *ident
 
     LOG_WARN("FlockModule: DETECTED %s - %s RSSI:%d via %s", deviceType, identifier, rssi, method);
 
-    // Build detection message with GPS coordinates if available
+    // Build detection message - different format for new vs getting closer
     char message[237]; // Max Meshtastic payload size
-    if (hasGpsLock) {
-        snprintf(message, sizeof(message), "ALERT: %s detected! ID:%s RSSI:%d Loc:%.6f,%.6f Alt:%dm",
-                 deviceType, identifier, rssi, latitude, longitude, altitude);
+    bool gettingCloser = (alertType == 2);
+
+    if (gettingCloser) {
+        // Getting closer message
+        if (hasGpsLock) {
+            snprintf(message, sizeof(message), "CLOSER: %s ID:%s RSSI:%d Loc:%.6f,%.6f",
+                     deviceType, identifier, rssi, latitude, longitude);
+        } else {
+            snprintf(message, sizeof(message), "CLOSER: %s ID:%s RSSI:%d",
+                     deviceType, identifier, rssi);
+        }
     } else {
-        snprintf(message, sizeof(message), "ALERT: %s detected! ID:%s RSSI:%d (No GPS)",
-                 deviceType, identifier, rssi);
+        // New detection message
+        if (hasGpsLock) {
+            snprintf(message, sizeof(message), "ALERT: %s detected! ID:%s RSSI:%d Loc:%.6f,%.6f Alt:%dm",
+                     deviceType, identifier, rssi, latitude, longitude, altitude);
+        } else {
+            snprintf(message, sizeof(message), "ALERT: %s detected! ID:%s RSSI:%d (No GPS)",
+                     deviceType, identifier, rssi);
+        }
     }
 
     // Send to mesh
