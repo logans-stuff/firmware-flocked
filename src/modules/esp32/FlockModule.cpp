@@ -507,8 +507,8 @@ const char *FlockModule::estimateRavenFirmwareVersion(NimBLEAdvertisedDevice *de
     return "Unknown";
 }
 
-// Check if we should alert for this device (not seen within dedup window)
-bool FlockModule::shouldAlertForDevice(const char *identifier)
+// Check if we should alert for this device (not seen within dedup window, or RSSI improved significantly)
+bool FlockModule::shouldAlertForDevice(const char *identifier, int rssi)
 {
     if (!identifier)
         return false;
@@ -518,12 +518,22 @@ bool FlockModule::shouldAlertForDevice(const char *identifier)
     // Search for this device in our list
     for (int i = 0; i < seenDeviceCount; i++) {
         if (strncmp(seenDevices[i].identifier, identifier, sizeof(seenDevices[i].identifier) - 1) == 0) {
-            // Found it - check if enough time has passed
+            // Found it - check if RSSI improved significantly (signal getting stronger = getting closer)
+            int rssiImprovement = rssi - seenDevices[i].lastRssi;
+            if (rssiImprovement >= RSSI_IMPROVEMENT_THRESHOLD) {
+                LOG_INFO("FlockModule: RSSI improved by %d dB (was %d, now %d) - getting closer!",
+                         rssiImprovement, seenDevices[i].lastRssi, rssi);
+                return true;  // Signal stronger, allow alert
+            }
+
+            // Check if enough time has passed
             uint32_t elapsed = now - seenDevices[i].lastAlertTime;
             if (elapsed >= FLOCK_DEDUPE_INTERVAL) {
                 return true;  // Enough time passed, allow alert
             }
-            LOG_DEBUG("FlockModule: Dedup - skipping %s (last alert %d sec ago)", identifier, elapsed / 1000);
+
+            LOG_DEBUG("FlockModule: Dedup - skipping %s (RSSI:%d, last:%d, %d sec ago)",
+                      identifier, rssi, seenDevices[i].lastRssi, elapsed / 1000);
             return false;
         }
     }
@@ -533,17 +543,18 @@ bool FlockModule::shouldAlertForDevice(const char *identifier)
 }
 
 // Record that we sent an alert for this device
-void FlockModule::recordDeviceAlert(const char *identifier)
+void FlockModule::recordDeviceAlert(const char *identifier, int rssi)
 {
     if (!identifier)
         return;
 
     uint32_t now = millis();
 
-    // Check if device already exists, update timestamp
+    // Check if device already exists, update timestamp and RSSI
     for (int i = 0; i < seenDeviceCount; i++) {
         if (strncmp(seenDevices[i].identifier, identifier, sizeof(seenDevices[i].identifier) - 1) == 0) {
             seenDevices[i].lastAlertTime = now;
+            seenDevices[i].lastRssi = (int8_t)rssi;
             return;
         }
     }
@@ -563,14 +574,16 @@ void FlockModule::recordDeviceAlert(const char *identifier)
         strncpy(seenDevices[oldestIdx].identifier, identifier, sizeof(seenDevices[oldestIdx].identifier) - 1);
         seenDevices[oldestIdx].identifier[sizeof(seenDevices[oldestIdx].identifier) - 1] = '\0';
         seenDevices[oldestIdx].lastAlertTime = now;
+        seenDevices[oldestIdx].lastRssi = (int8_t)rssi;
     } else {
         // Add to end
         strncpy(seenDevices[seenDeviceCount].identifier, identifier, sizeof(seenDevices[seenDeviceCount].identifier) - 1);
         seenDevices[seenDeviceCount].identifier[sizeof(seenDevices[seenDeviceCount].identifier) - 1] = '\0';
         seenDevices[seenDeviceCount].lastAlertTime = now;
+        seenDevices[seenDeviceCount].lastRssi = (int8_t)rssi;
         seenDeviceCount++;
     }
-    LOG_DEBUG("FlockModule: Recorded alert for %s (tracking %d devices)", identifier, seenDeviceCount);
+    LOG_DEBUG("FlockModule: Recorded alert for %s RSSI:%d (tracking %d devices)", identifier, rssi, seenDeviceCount);
 }
 
 // Clean up devices that haven't been seen in a long time
@@ -608,8 +621,8 @@ void FlockModule::cleanupOldDevices()
 
 void FlockModule::sendDetectionMessage(const char *deviceType, const char *identifier, int rssi, const char *method)
 {
-    // Per-device deduplication - don't re-alert for same device within 30 minutes
-    if (!shouldAlertForDevice(identifier)) {
+    // Per-device deduplication - don't re-alert unless 30 min passed or RSSI improved significantly
+    if (!shouldAlertForDevice(identifier, rssi)) {
         // Still update detection state even if deduplicated
         deviceInRange = true;
         lastDetectionTime = millis();
@@ -684,8 +697,8 @@ void FlockModule::sendDetectionMessage(const char *deviceType, const char *ident
     lastHeartbeat = millis();
     triggered = true;
 
-    // Record this device for deduplication
-    recordDeviceAlert(identifier);
+    // Record this device for deduplication with current RSSI
+    recordDeviceAlert(identifier, rssi);
 }
 
 void FlockModule::sendHeartbeatMessage()
