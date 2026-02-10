@@ -61,17 +61,19 @@ class FlockModule : public SinglePortModule, private concurrency::OSThread
 
     // Device deduplication - fixed-size array to track recently seen devices
     static const int MAX_TRACKED_DEVICES = 20;
+    static const int RSSI_IMPROVEMENT_THRESHOLD = 5;  // Alert if RSSI improves by 5+ dB
     struct SeenDevice {
         char identifier[24];  // MAC address or short ID
         uint32_t lastAlertTime;
+        int8_t lastRssi;      // Track signal strength
     };
     SeenDevice seenDevices[MAX_TRACKED_DEVICES];
     int seenDeviceCount = 0;
     uint32_t lastDedupeCleanup = 0;
 
     // Deduplication methods
-    bool shouldAlertForDevice(const char *identifier);
-    void recordDeviceAlert(const char *identifier);
+    bool shouldAlertForDevice(const char *identifier, int rssi);
+    void recordDeviceAlert(const char *identifier, int rssi);
     void cleanupOldDevices();
 
     // Detection methods
